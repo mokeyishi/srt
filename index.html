@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SRT 字幕校对</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header>
+        <h1>SRT 字幕校对</h1>
+        <p>
+          上传两份中英字幕（中文在上英文在下），以第一份为标准，检测第二份英文内容一致但时间轴不同的条目。
+        </p>
+      </header>
+
+      <section class="inputs">
+        <div class="card">
+          <h2>第一份字幕（标准）</h2>
+          <input type="file" id="primaryFile" accept=".srt" />
+          <textarea id="primaryText" placeholder="或粘贴第一份字幕内容"></textarea>
+        </div>
+        <div class="card">
+          <h2>第二份字幕（待校对）</h2>
+          <input type="file" id="secondaryFile" accept=".srt" />
+          <textarea id="secondaryText" placeholder="或粘贴第二份字幕内容"></textarea>
+        </div>
+      </section>
+
+      <section class="actions">
+        <button id="compareButton">开始检测</button>
+        <button id="exportButton" disabled>导出修正后的字幕</button>
+      </section>
+
+      <section class="summary" id="summary"></section>
+
+      <section class="results">
+        <h2>检测结果</h2>
+        <div id="results"></div>
+      </section>
+    </main>
+
+    <script src="script.js"></script>
+  </body>
+</html>
