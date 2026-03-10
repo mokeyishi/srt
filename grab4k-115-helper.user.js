@@ -67,32 +67,6 @@
       const match = (text || '').match(CONFIG.link115Regex);
       return match ? { url: match[0], shareCode: match[1], password: match[2] } : null;
     },
-    extract115FromElement(el) {
-      if (!el) return null;
-      const attrs = ['href', 'data-href', 'data-url', 'data-clipboard-text', 'data-clipboard', 'data-copy', 'data-link', 'title'];
-      for (const name of attrs) {
-        const value = el.getAttribute?.(name);
-        const parsed = Utils.parse115Link(value || '');
-        if (parsed) return parsed;
-      }
-      const text = [el.textContent || '', el.innerText || ''].join(' ');
-      return Utils.parse115Link(text);
-    },
-    find115LinkInRow(row, copyBtn) {
-      const nodes = [
-        copyBtn,
-        row,
-        ...row.querySelectorAll('[href], [data-url], [data-href], [data-copy], [data-clipboard-text], [onclick]'),
-      ];
-      for (const node of nodes) {
-        const parsed = Utils.extract115FromElement(node);
-        if (parsed) return parsed;
-        const onclickText = node?.getAttribute?.('onclick') || '';
-        const parsedOnclick = Utils.parse115Link(onclickText);
-        if (parsedOnclick) return parsedOnclick;
-      }
-      return null;
-    },
     humanSize(size) {
       if (size < 1024) return `${size}B`;
       if (size < 1048576) return `${(size / 1024).toFixed(2)}KB`;
@@ -265,7 +239,7 @@
     return [...section.querySelectorAll('.module-row-info')];
   }
 
-  async function clickCopyAndTransfer(copyBtn, row) {
+  async function clickCopyAndTransfer(copyBtn) {
     const cookie = GM_getValue('115_cookie', '');
     if (!cookie) {
       Toast.show('请先点击 ⚙️ 设置 115 Cookie', 'error');
@@ -274,35 +248,31 @@
 
     const cid = GM_getValue('115_cid', '0');
 
-    let parsed = Utils.find115LinkInRow(row, copyBtn);
-    if (!parsed) {
+    let parsed = null;
+
+    try {
+      await navigator.clipboard.writeText('');
+    } catch (_) {
+      // ignore clipboard clear failure
+    }
+
+    copyBtn.click();
+
+    const deadline = Date.now() + CONFIG.clipMaxWait;
+    while (!parsed && Date.now() < deadline) {
+      await sleep(CONFIG.clipPollInterval);
       try {
-        await navigator.clipboard.writeText('');
-      } catch (_) {
-        // ignore clipboard clear failure
-      }
-
-      copyBtn.click();
-
-      parsed = Utils.find115LinkInRow(row, copyBtn);
-      const deadline = Date.now() + CONFIG.clipMaxWait;
-      while (!parsed && Date.now() < deadline) {
-        await sleep(CONFIG.clipPollInterval);
-        parsed = Utils.find115LinkInRow(row, copyBtn);
-        if (parsed) break;
-        try {
-          const text = await navigator.clipboard.readText();
-          if (text) {
-            parsed = Utils.parse115Link(text);
-          }
-        } catch (_) {
-          // ignore temporary clipboard read failures
+        const text = await navigator.clipboard.readText();
+        if (text) {
+          parsed = Utils.parse115Link(text);
         }
+      } catch (_) {
+        // ignore temporary clipboard read failures
       }
     }
 
     if (!parsed) {
-      Toast.show('未获取到有效 115 链接，请点击页面“复制”后重试', 'error');
+      Toast.show('未获取到有效 115 链接，请确认浏览器允许剪贴板读取', 'error');
       return null;
     }
 
@@ -324,7 +294,7 @@
     }
 
     Toast.show(`正在转存：${getMovieTitle(row)}`, 'process', 2500);
-    const result = await clickCopyAndTransfer(copyBtn, row);
+    const result = await clickCopyAndTransfer(copyBtn);
 
     if (triggerBtn && spanEl) {
       if (result?.ok) {
