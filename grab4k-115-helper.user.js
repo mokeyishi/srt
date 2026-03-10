@@ -33,41 +33,12 @@
     requestTimeout: 15000,
     autoTransferDelay: 900,
     autoTransferredFlag: 'g4k_auto_transferred',
-    batchParam: 'g4k_batch',
-    listModeKey: 'g4k_list_batch_mode',
-    logKey: 'g4k_transfer_logs',
-    logMax: 200,
-    batchListParam: 'g4k_list',
-    batchIdxParam: 'g4k_idx',
-    queueStateKey: 'g4k_batch_queue_state',
-    lastDoneKey: 'g4k_batch_last_done',
   };
 
   if (!CONFIG.siteDomains.some(domain => location.hostname.includes(domain))) return;
-
-  const isDetailPage = /\/down\//.test(location.pathname);
-  const urlParams = new URLSearchParams(location.search);
-  const isBatchContext = urlParams.get(CONFIG.batchParam) === '1';
-  const batchListKeyFromUrl = urlParams.get(CONFIG.batchListParam) || '';
-  const batchIdxFromUrl = Number(urlParams.get(CONFIG.batchIdxParam));
+  if (!/\/down\//.test(location.pathname)) return;
 
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-
-  const Batch = {
-    readLogs() {
-      return GM_getValue(CONFIG.logKey, []);
-    },
-    appendLog(status, movieTitle, message) {
-      const logs = this.readLogs();
-      logs.unshift({
-        time: new Date().toLocaleString(),
-        status,
-        movieTitle,
-        message,
-      });
-      GM_setValue(CONFIG.logKey, logs.slice(0, CONFIG.logMax));
-    },
-  };
 
   const Utils = {
     parse115Link(text) {
@@ -97,13 +68,6 @@
     const blockTitle = row?.closest('.module-list, .module-row')?.querySelector('.module-item-title, .module-title')?.textContent?.trim();
     if (blockTitle) return blockTitle;
 
-    return document.querySelector('.page-title')?.textContent?.trim()
-      || document.querySelector('h1')?.textContent?.trim()
-      || document.title.split('|')[0].split('-')[0].trim()
-      || '影片';
-  }
-
-  function getPageMovieTitle() {
     return document.querySelector('.page-title')?.textContent?.trim()
       || document.querySelector('h1')?.textContent?.trim()
       || document.title.split('|')[0].split('-')[0].trim()
@@ -255,8 +219,6 @@
 
     const cid = GM_getValue('115_cid', '0');
 
-    let parsed = null;
-
     try {
       await navigator.clipboard.writeText('');
     } catch (_) {
@@ -266,12 +228,14 @@
     copyBtn.click();
 
     const deadline = Date.now() + CONFIG.clipMaxWait;
-    while (!parsed && Date.now() < deadline) {
+    let parsed = null;
+    while (Date.now() < deadline) {
       await sleep(CONFIG.clipPollInterval);
       try {
         const text = await navigator.clipboard.readText();
         if (text) {
           parsed = Utils.parse115Link(text);
+          if (parsed) break;
         }
       } catch (_) {
         // ignore temporary clipboard read failures
@@ -279,7 +243,7 @@
     }
 
     if (!parsed) {
-      Toast.show('未获取到有效 115 链接，请确认浏览器允许剪贴板读取', 'error');
+      Toast.show('未获取到有效 115 链接，请检查复制权限', 'error');
       return null;
     }
 
@@ -318,26 +282,6 @@
 
     if (result?.ok) Toast.show(result.msg, result.skip ? 'skip' : 'success', 2500);
     else if (result) Toast.show(result.msg, 'error', 2800);
-
-    if (isBatchContext) {
-      const title = getMovieTitle(row) || getPageMovieTitle();
-      if (result?.ok) {
-        Batch.appendLog(result.skip ? '跳过' : '成功', title, result.msg);
-        if (batchListKeyFromUrl && Number.isFinite(batchIdxFromUrl)) {
-          GM_setValue(CONFIG.lastDoneKey, {
-            listKey: batchListKeyFromUrl,
-            idx: batchIdxFromUrl,
-            status: result.skip ? '跳过' : '成功',
-            at: Date.now(),
-          });
-        }
-        setTimeout(() => {
-          window.close();
-        }, 1200);
-      } else {
-        Batch.appendLog('失败', title, result?.msg || '未获取到链接或转存结果');
-      }
-    }
 
     return result;
   }
@@ -432,7 +376,8 @@
   }
 
   async function maybeAutoTransferSingle(rows) {
-    if (rows.length !== 1) return;
+    const autoEnabled = GM_getValue('auto_single_transfer', true);
+    if (!autoEnabled || rows.length !== 1) return;
 
     if (sessionStorage.getItem(CONFIG.autoTransferredFlag) === '1') return;
     sessionStorage.setItem(CONFIG.autoTransferredFlag, '1');
@@ -534,6 +479,10 @@
         <input id="g4k-cid" type="text" placeholder="0 = 根目录"
           style="width:100%;padding:8px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;box-sizing:border-box;margin-top:6px;">
       </div>
+      <label style="display:flex;align-items:center;gap:8px;margin-bottom:18px;cursor:pointer;">
+        <input id="g4k-auto-single" type="checkbox" style="width:14px;height:14px;">
+        <span>当内容页仅有 1 个资源时自动转存</span>
+      </label>
       <div style="display:flex;gap:8px;justify-content:flex-end">
         <button id="g4k-cancel" style="padding:7px 18px;border:1px solid #ddd;border-radius:8px;background:#fff;cursor:pointer;font-size:13px;">取消</button>
         <button id="g4k-save" style="padding:7px 18px;border:none;border-radius:8px;background:linear-gradient(135deg,#1976d2,#1565c0);color:#fff;cursor:pointer;font-weight:600;font-size:13px;">保存</button>
@@ -546,12 +495,14 @@
     setTimeout(() => {
       document.getElementById('g4k-cookie').value = GM_getValue('115_cookie', '');
       document.getElementById('g4k-cid').value = GM_getValue('115_cid', '0');
+      document.getElementById('g4k-auto-single').checked = GM_getValue('auto_single_transfer', true);
     }, 30);
 
     document.getElementById('g4k-cancel').onclick = () => overlay.remove();
     document.getElementById('g4k-save').onclick = () => {
       GM_setValue('115_cookie', document.getElementById('g4k-cookie').value.trim());
       GM_setValue('115_cid', document.getElementById('g4k-cid').value.trim() || '0');
+      GM_setValue('auto_single_transfer', document.getElementById('g4k-auto-single').checked);
       Toast.show('设置已保存', 'success');
       overlay.remove();
     };
@@ -587,179 +538,6 @@
     document.body.appendChild(fab);
   }
 
-  function currentListKey() {
-    const next = new URL(location.href);
-    next.searchParams.delete(CONFIG.batchParam);
-    next.searchParams.delete(CONFIG.batchListParam);
-    next.searchParams.delete(CONFIG.batchIdxParam);
-    return `${next.origin}${next.pathname}${next.search}`;
-  }
-
-  function withBatchParam(url, listKey, idx) {
-    try {
-      const next = new URL(url, location.origin);
-      next.searchParams.set(CONFIG.batchParam, '1');
-      next.searchParams.set(CONFIG.batchListParam, listKey);
-      next.searchParams.set(CONFIG.batchIdxParam, String(idx));
-      return next.toString();
-    } catch (_) {
-      return url;
-    }
-  }
-
-  function getDetailMovieLinks() {
-    const all = [...document.querySelectorAll('a[href]')];
-    const seen = new Set();
-    const links = [];
-    all.forEach(link => {
-      const href = link.getAttribute('href') || '';
-      if (!/\/vod\/(detail|down)\//.test(href)) return;
-      if (href.startsWith('javascript:') || href.startsWith('#')) return;
-      const abs = new URL(link.href, location.origin).toString();
-      if (seen.has(abs)) return;
-      seen.add(abs);
-      links.push(link);
-    });
-    return links;
-  }
-
-  function startQueueFromLink(link) {
-    const links = getDetailMovieLinks();
-    const clickedAbs = new URL(link.href, location.origin).toString();
-    const idx = links.findIndex(item => new URL(item.href, location.origin).toString() === clickedAbs);
-    if (idx < 0) return;
-
-    const listKey = currentListKey();
-    GM_setValue(CONFIG.queueStateKey, {
-      running: true,
-      listKey,
-      currentIdx: idx,
-      total: links.length,
-      updatedAt: Date.now(),
-    });
-
-    Toast.show(`队列已开始：第 ${idx + 1}/${links.length} 部`, 'info', 1800);
-    window.open(withBatchParam(link.href, listKey, idx), '_blank', 'noopener');
-  }
-
-  function bootQueueWatcher(renderLogs) {
-    const listKey = currentListKey();
-    let lastSignalAt = 0;
-
-    const tick = () => {
-      const state = GM_getValue(CONFIG.queueStateKey, null);
-      if (!state?.running || state.listKey !== listKey) return;
-
-      const signal = GM_getValue(CONFIG.lastDoneKey, null);
-      if (!signal || signal.listKey !== listKey || signal.at === lastSignalAt) return;
-      if (signal.idx !== state.currentIdx) return;
-
-      lastSignalAt = signal.at;
-      const links = getDetailMovieLinks();
-      const nextIdx = state.currentIdx + 1;
-      if (nextIdx >= links.length) {
-        GM_setValue(CONFIG.queueStateKey, { ...state, running: false, updatedAt: Date.now() });
-        Toast.show(`队列完成：共处理 ${state.currentIdx + 1} 部`, 'success', 2600);
-        if (typeof renderLogs === 'function') renderLogs();
-        return;
-      }
-
-      const nextLink = links[nextIdx];
-      GM_setValue(CONFIG.queueStateKey, {
-        ...state,
-        currentIdx: nextIdx,
-        total: links.length,
-        updatedAt: Date.now(),
-      });
-      Toast.show(`继续下一部：${nextIdx + 1}/${links.length}`, 'process', 1600);
-      window.open(withBatchParam(nextLink.href, listKey, nextIdx), '_blank', 'noopener');
-      if (typeof renderLogs === 'function') renderLogs();
-    };
-
-    window.addEventListener('focus', tick);
-    setInterval(tick, 1200);
-  }
-
-  function renderBatchLogs(container) {
-    const logs = Batch.readLogs();
-    if (!logs.length) {
-      container.innerHTML = '<div style="font-size:12px;color:#888;">暂无日志</div>';
-      return;
-    }
-
-    container.innerHTML = logs.slice(0, 15).map(item => {
-      const color = item.status === '成功' ? '#2e7d32' : item.status === '跳过' ? '#6a1b9a' : '#c62828';
-      return `<div style="font-size:12px;line-height:1.45;padding:4px 0;border-bottom:1px dashed #eee;">
-        <span style="color:${color};font-weight:700;">${item.status}</span>
-        <span style="color:#111;"> + ${item.movieTitle}</span>
-        <div style="color:#777;">${item.time} · ${item.message}</div>
-      </div>`;
-    }).join('');
-  }
-
-  function addListBatchPanel() {
-    if (document.getElementById('g4k-list-panel')) return;
-
-    const panel = document.createElement('div');
-    panel.id = 'g4k-list-panel';
-    Object.assign(panel.style, {
-      position: 'fixed', right: '16px', bottom: '16px', zIndex: 100020,
-      width: '320px', background: 'rgba(255,255,255,.96)', border: '1px solid #ddd',
-      borderRadius: '12px', boxShadow: '0 10px 30px rgba(0,0,0,.2)', padding: '12px',
-      fontFamily: 'system-ui,sans-serif',
-    });
-
-    panel.innerHTML = `
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-        <b style="font-size:13px;">筛选页批量转存</b>
-        <label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer;">
-          <input id="g4k-list-mode" type="checkbox"> 一键转存模式
-        </label>
-      </div>
-      <div style="font-size:11px;color:#666;margin-top:6px;">开启后，你点击任意一部影片会启动顺序队列：从当前这部开始，成功关闭后自动打开下一部；单资源自动转存，多资源手动点“ 一键转存 ”。</div>
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;">
-        <b style="font-size:12px;">转存日志</b>
-        <button id="g4k-clear-logs" style="border:1px solid #ddd;background:#fff;border-radius:6px;padding:3px 8px;cursor:pointer;font-size:11px;">清空</button>
-      </div>
-      <div id="g4k-log-list" style="max-height:190px;overflow:auto;margin-top:6px;"></div>
-    `;
-
-    document.body.appendChild(panel);
-
-    const modeEl = panel.querySelector('#g4k-list-mode');
-    const listEl = panel.querySelector('#g4k-log-list');
-    modeEl.checked = GM_getValue(CONFIG.listModeKey, false);
-    renderBatchLogs(listEl);
-
-    modeEl.onchange = () => {
-      GM_setValue(CONFIG.listModeKey, modeEl.checked);
-      Toast.show(modeEl.checked ? '已开启筛选页一键转存模式' : '已关闭筛选页一键转存模式', 'info', 1800);
-    };
-
-    panel.querySelector('#g4k-clear-logs').onclick = () => {
-      GM_setValue(CONFIG.logKey, []);
-      renderBatchLogs(listEl);
-      Toast.show('日志已清空', 'success', 1500);
-    };
-
-    document.addEventListener('click', event => {
-      if (!GM_getValue(CONFIG.listModeKey, false)) return;
-      const target = event.target;
-      const link = target.closest('a[href]');
-      if (!link) return;
-      const href = link.getAttribute('href') || '';
-      if (!href || href.startsWith('javascript:') || href.startsWith('#')) return;
-      if (!/\/vod\/(detail|down)\//.test(href)) return;
-      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
-
-      event.preventDefault();
-      event.stopPropagation();
-      startQueueFromLink(link);
-    }, true);
-
-    bootQueueWatcher(() => renderBatchLogs(listEl));
-  }
-
   function injectStyles() {
     if (document.getElementById('g4k-style')) return;
     const style = document.createElement('style');
@@ -790,13 +568,9 @@
   function init() {
     injectStyles();
     Toast.init();
-    if (isDetailPage) {
-      addSettingsButton();
-      injectTransferButtons();
-      observeListChanges();
-      return;
-    }
-    addListBatchPanel();
+    addSettingsButton();
+    injectTransferButtons();
+    observeListChanges();
   }
 
   try {
