@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grab4K 115 一键转存助手（增强版）
 // @version      5.4.0
-// @description  在 Grab4K 内容页为 115 资源提供一键/批量转存、单资源自动转存与列表选择转存
+// @description  在 Grab4K 内容页为 115 资源提供一键/批量转存与列表选择转存，支持自动定位到资源区
 // @author       楠 (adapted for Grab4K, enhanced by Codex)
 // @match        *://grab4k.com/*
 // @match        *://www.grab4k.com/*
@@ -31,8 +31,7 @@
     clipMaxWait: 6000,
     clipPollInterval: 250,
     requestTimeout: 15000,
-    autoTransferDelay: 900,
-    autoTransferredFlag: 'g4k_auto_transferred',
+    autoScrollDoneFlagPrefix: 'g4k_auto_scrolled_to_module_title',
   };
 
   if (!CONFIG.siteDomains.some(domain => location.hostname.includes(domain))) return;
@@ -375,19 +374,14 @@
     };
   }
 
-  async function maybeAutoTransferSingle(rows) {
-    const autoEnabled = GM_getValue('auto_single_transfer', true);
-    if (!autoEnabled || rows.length !== 1) return;
+  function maybeScrollToModuleTitle() {
+    const pageScrollFlag = `${CONFIG.autoScrollDoneFlagPrefix}:${location.pathname}${location.search}`;
+    if (sessionStorage.getItem(pageScrollFlag) === '1') return;
+    const moduleTitle = document.querySelector('.module-title');
+    if (!moduleTitle) return;
 
-    if (sessionStorage.getItem(CONFIG.autoTransferredFlag) === '1') return;
-    sessionStorage.setItem(CONFIG.autoTransferredFlag, '1');
-
-    await sleep(CONFIG.autoTransferDelay);
-    const btn = rows[0].querySelector('.g4k-transfer-btn');
-    if (btn) {
-      Toast.show('检测到单个资源，自动开始转存', 'info', 2200);
-      btn.click();
-    }
+    sessionStorage.setItem(pageScrollFlag, '1');
+    moduleTitle.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
 
   function injectTransferButtons() {
@@ -445,7 +439,6 @@
       toolbar.prepend(batchBtn);
     }
 
-    maybeAutoTransferSingle(rows);
   }
 
   function showSettings() {
@@ -479,10 +472,6 @@
         <input id="g4k-cid" type="text" placeholder="0 = 根目录"
           style="width:100%;padding:8px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;box-sizing:border-box;margin-top:6px;">
       </div>
-      <label style="display:flex;align-items:center;gap:8px;margin-bottom:18px;cursor:pointer;">
-        <input id="g4k-auto-single" type="checkbox" style="width:14px;height:14px;">
-        <span>当内容页仅有 1 个资源时自动转存</span>
-      </label>
       <div style="display:flex;gap:8px;justify-content:flex-end">
         <button id="g4k-cancel" style="padding:7px 18px;border:1px solid #ddd;border-radius:8px;background:#fff;cursor:pointer;font-size:13px;">取消</button>
         <button id="g4k-save" style="padding:7px 18px;border:none;border-radius:8px;background:linear-gradient(135deg,#1976d2,#1565c0);color:#fff;cursor:pointer;font-weight:600;font-size:13px;">保存</button>
@@ -495,14 +484,12 @@
     setTimeout(() => {
       document.getElementById('g4k-cookie').value = GM_getValue('115_cookie', '');
       document.getElementById('g4k-cid').value = GM_getValue('115_cid', '0');
-      document.getElementById('g4k-auto-single').checked = GM_getValue('auto_single_transfer', true);
     }, 30);
 
     document.getElementById('g4k-cancel').onclick = () => overlay.remove();
     document.getElementById('g4k-save').onclick = () => {
       GM_setValue('115_cookie', document.getElementById('g4k-cookie').value.trim());
       GM_setValue('115_cid', document.getElementById('g4k-cid').value.trim() || '0');
-      GM_setValue('auto_single_transfer', document.getElementById('g4k-auto-single').checked);
       Toast.show('设置已保存', 'success');
       overlay.remove();
     };
@@ -570,7 +557,12 @@
     Toast.init();
     addSettingsButton();
     injectTransferButtons();
+    maybeScrollToModuleTitle();
     observeListChanges();
+
+    setTimeout(() => {
+      maybeScrollToModuleTitle();
+    }, 800);
   }
 
   try {
