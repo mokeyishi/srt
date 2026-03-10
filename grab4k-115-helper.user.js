@@ -33,12 +33,34 @@
     requestTimeout: 15000,
     autoTransferDelay: 900,
     autoTransferredFlag: 'g4k_auto_transferred',
+    batchParam: 'g4k_batch',
+    listModeKey: 'g4k_list_batch_mode',
+    logKey: 'g4k_transfer_logs',
+    logMax: 200,
   };
 
   if (!CONFIG.siteDomains.some(domain => location.hostname.includes(domain))) return;
-  if (!/\/down\//.test(location.pathname)) return;
+
+  const isDetailPage = /\/down\//.test(location.pathname);
+  const isBatchContext = new URLSearchParams(location.search).get(CONFIG.batchParam) === '1';
 
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+  const Batch = {
+    readLogs() {
+      return GM_getValue(CONFIG.logKey, []);
+    },
+    appendLog(status, movieTitle, message) {
+      const logs = this.readLogs();
+      logs.unshift({
+        time: new Date().toLocaleString(),
+        status,
+        movieTitle,
+        message,
+      });
+      GM_setValue(CONFIG.logKey, logs.slice(0, CONFIG.logMax));
+    },
+  };
 
   const Utils = {
     parse115Link(text) {
@@ -68,6 +90,13 @@
     const blockTitle = row?.closest('.module-list, .module-row')?.querySelector('.module-item-title, .module-title')?.textContent?.trim();
     if (blockTitle) return blockTitle;
 
+    return document.querySelector('.page-title')?.textContent?.trim()
+      || document.querySelector('h1')?.textContent?.trim()
+      || document.title.split('|')[0].split('-')[0].trim()
+      || '影片';
+  }
+
+  function getPageMovieTitle() {
     return document.querySelector('.page-title')?.textContent?.trim()
       || document.querySelector('h1')?.textContent?.trim()
       || document.title.split('|')[0].split('-')[0].trim()
@@ -282,6 +311,18 @@
 
     if (result?.ok) Toast.show(result.msg, result.skip ? 'skip' : 'success', 2500);
     else if (result) Toast.show(result.msg, 'error', 2800);
+
+    if (isBatchContext) {
+      const title = getMovieTitle(row) || getPageMovieTitle();
+      if (result?.ok) {
+        Batch.appendLog(result.skip ? '跳过' : '成功', title, result.msg);
+        setTimeout(() => {
+          window.close();
+        }, 1200);
+      } else {
+        Batch.appendLog('失败', title, result?.msg || '未获取到链接或转存结果');
+      }
+    }
 
     return result;
   }
@@ -538,6 +579,94 @@
     document.body.appendChild(fab);
   }
 
+  function withBatchParam(url) {
+    try {
+      const next = new URL(url, location.origin);
+      next.searchParams.set(CONFIG.batchParam, '1');
+      return next.toString();
+    } catch (_) {
+      return url;
+    }
+  }
+
+  function renderBatchLogs(container) {
+    const logs = Batch.readLogs();
+    if (!logs.length) {
+      container.innerHTML = '<div style="font-size:12px;color:#888;">暂无日志</div>';
+      return;
+    }
+
+    container.innerHTML = logs.slice(0, 15).map(item => {
+      const color = item.status === '成功' ? '#2e7d32' : item.status === '跳过' ? '#6a1b9a' : '#c62828';
+      return `<div style="font-size:12px;line-height:1.45;padding:4px 0;border-bottom:1px dashed #eee;">
+        <span style="color:${color};font-weight:700;">${item.status}</span>
+        <span style="color:#111;"> + ${item.movieTitle}</span>
+        <div style="color:#777;">${item.time} · ${item.message}</div>
+      </div>`;
+    }).join('');
+  }
+
+  function addListBatchPanel() {
+    if (document.getElementById('g4k-list-panel')) return;
+
+    const panel = document.createElement('div');
+    panel.id = 'g4k-list-panel';
+    Object.assign(panel.style, {
+      position: 'fixed', right: '16px', bottom: '16px', zIndex: 100020,
+      width: '320px', background: 'rgba(255,255,255,.96)', border: '1px solid #ddd',
+      borderRadius: '12px', boxShadow: '0 10px 30px rgba(0,0,0,.2)', padding: '12px',
+      fontFamily: 'system-ui,sans-serif',
+    });
+
+    panel.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+        <b style="font-size:13px;">筛选页批量转存</b>
+        <label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer;">
+          <input id="g4k-list-mode" type="checkbox"> 一键转存模式
+        </label>
+      </div>
+      <div style="font-size:11px;color:#666;margin-top:6px;">开启后，点击影片将自动新开内容页。单资源会自动转存并自动关闭页面；多资源需手动点“ 一键转存 ”，成功后自动关闭。</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;">
+        <b style="font-size:12px;">转存日志</b>
+        <button id="g4k-clear-logs" style="border:1px solid #ddd;background:#fff;border-radius:6px;padding:3px 8px;cursor:pointer;font-size:11px;">清空</button>
+      </div>
+      <div id="g4k-log-list" style="max-height:190px;overflow:auto;margin-top:6px;"></div>
+    `;
+
+    document.body.appendChild(panel);
+
+    const modeEl = panel.querySelector('#g4k-list-mode');
+    const listEl = panel.querySelector('#g4k-log-list');
+    modeEl.checked = GM_getValue(CONFIG.listModeKey, false);
+    renderBatchLogs(listEl);
+
+    modeEl.onchange = () => {
+      GM_setValue(CONFIG.listModeKey, modeEl.checked);
+      Toast.show(modeEl.checked ? '已开启筛选页一键转存模式' : '已关闭筛选页一键转存模式', 'info', 1800);
+    };
+
+    panel.querySelector('#g4k-clear-logs').onclick = () => {
+      GM_setValue(CONFIG.logKey, []);
+      renderBatchLogs(listEl);
+      Toast.show('日志已清空', 'success', 1500);
+    };
+
+    document.addEventListener('click', event => {
+      if (!GM_getValue(CONFIG.listModeKey, false)) return;
+      const target = event.target;
+      const link = target.closest('a[href]');
+      if (!link) return;
+      const href = link.getAttribute('href') || '';
+      if (!href || href.startsWith('javascript:') || /\/down\//.test(href) || href.startsWith('#')) return;
+      if (!/\/vod\//.test(href)) return;
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      window.open(withBatchParam(link.href), '_blank', 'noopener');
+    }, true);
+  }
+
   function injectStyles() {
     if (document.getElementById('g4k-style')) return;
     const style = document.createElement('style');
@@ -568,9 +697,13 @@
   function init() {
     injectStyles();
     Toast.init();
-    addSettingsButton();
-    injectTransferButtons();
-    observeListChanges();
+    if (isDetailPage) {
+      addSettingsButton();
+      injectTransferButtons();
+      observeListChanges();
+      return;
+    }
+    addListBatchPanel();
   }
 
   try {
