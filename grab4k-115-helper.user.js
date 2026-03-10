@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grab4K 115 一键转存助手（增强版）
-// @version      5.5.1
-// @description  Grab4K 内容页 115 转存 + 筛选页顺序新标签自动浏览
+// @version      5.6.0
+// @description  Grab4K 筛选页顺序新标签浏览助手（仅筛选页生效）
 // @author       楠 (adapted for Grab4K, enhanced by Codex)
 // @match        *://grab4k.com/*
 // @match        *://www.grab4k.com/*
@@ -39,9 +39,10 @@
 
   if (!CONFIG.siteDomains.some(domain => location.hostname.includes(domain))) return;
 
-  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-
   const isDetailPage = /\/down\//.test(location.pathname);
+  if (isDetailPage) return;
+
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
   function withSeqParams(rawUrl, sid, idx) {
     const url = new URL(rawUrl, location.origin);
@@ -636,8 +637,8 @@
       const stopBtn = document.getElementById('g4k-seq-stop');
       const status = document.getElementById('g4k-seq-status');
       if (!startBtn || !stopBtn || !status) return;
-      startBtn.disabled = this.state.enabled;
-      stopBtn.disabled = !this.state.enabled;
+      startBtn.style.display = this.state.enabled ? 'none' : 'inline-block';
+      stopBtn.style.display = this.state.enabled ? 'inline-block' : 'none';
       status.textContent = this.state.enabled
         ? `已开启，当前进度 ${Math.max(this.state.current + 1, 0)}/${this.state.queue.length}`
         : '未开启';
@@ -770,7 +771,7 @@
       const startBtn = panel.querySelector('#g4k-seq-start');
       const stopBtn = panel.querySelector('#g4k-seq-stop');
       Object.assign(startBtn.style, btnStyle, { background: '#22c55e', color: '#062d16' });
-      Object.assign(stopBtn.style, btnStyle, { background: '#ef4444', color: '#fff' });
+      Object.assign(stopBtn.style, btnStyle, { background: '#ef4444', color: '#fff', display: 'none' });
       startBtn.onclick = () => this.start();
       stopBtn.onclick = () => this.reset();
       this.updatePanel();
@@ -838,15 +839,6 @@
   function init() {
     injectStyles();
     Toast.init();
-
-    if (isDetailPage) {
-      initDetailCloseReporter();
-      addSettingsButton();
-      injectTransferButtons();
-      observeListChanges();
-      return;
-    }
-
     SequenceNavigator.init();
   }
 
