@@ -37,12 +37,19 @@
     listModeKey: 'g4k_list_batch_mode',
     logKey: 'g4k_transfer_logs',
     logMax: 200,
+    batchListParam: 'g4k_list',
+    batchIdxParam: 'g4k_idx',
+    queueStateKey: 'g4k_batch_queue_state',
+    lastDoneKey: 'g4k_batch_last_done',
   };
 
   if (!CONFIG.siteDomains.some(domain => location.hostname.includes(domain))) return;
 
   const isDetailPage = /\/down\//.test(location.pathname);
-  const isBatchContext = new URLSearchParams(location.search).get(CONFIG.batchParam) === '1';
+  const urlParams = new URLSearchParams(location.search);
+  const isBatchContext = urlParams.get(CONFIG.batchParam) === '1';
+  const batchListKeyFromUrl = urlParams.get(CONFIG.batchListParam) || '';
+  const batchIdxFromUrl = Number(urlParams.get(CONFIG.batchIdxParam));
 
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -316,6 +323,14 @@
       const title = getMovieTitle(row) || getPageMovieTitle();
       if (result?.ok) {
         Batch.appendLog(result.skip ? '跳过' : '成功', title, result.msg);
+        if (batchListKeyFromUrl && Number.isFinite(batchIdxFromUrl)) {
+          GM_setValue(CONFIG.lastDoneKey, {
+            listKey: batchListKeyFromUrl,
+            idx: batchIdxFromUrl,
+            status: result.skip ? '跳过' : '成功',
+            at: Date.now(),
+          });
+        }
         setTimeout(() => {
           window.close();
         }, 1200);
@@ -572,14 +587,97 @@
     document.body.appendChild(fab);
   }
 
-  function withBatchParam(url) {
+  function currentListKey() {
+    const next = new URL(location.href);
+    next.searchParams.delete(CONFIG.batchParam);
+    next.searchParams.delete(CONFIG.batchListParam);
+    next.searchParams.delete(CONFIG.batchIdxParam);
+    return `${next.origin}${next.pathname}${next.search}`;
+  }
+
+  function withBatchParam(url, listKey, idx) {
     try {
       const next = new URL(url, location.origin);
       next.searchParams.set(CONFIG.batchParam, '1');
+      next.searchParams.set(CONFIG.batchListParam, listKey);
+      next.searchParams.set(CONFIG.batchIdxParam, String(idx));
       return next.toString();
     } catch (_) {
       return url;
     }
+  }
+
+  function getDetailMovieLinks() {
+    const all = [...document.querySelectorAll('a[href]')];
+    const seen = new Set();
+    const links = [];
+    all.forEach(link => {
+      const href = link.getAttribute('href') || '';
+      if (!/\/vod\/(detail|down)\//.test(href)) return;
+      if (href.startsWith('javascript:') || href.startsWith('#')) return;
+      const abs = new URL(link.href, location.origin).toString();
+      if (seen.has(abs)) return;
+      seen.add(abs);
+      links.push(link);
+    });
+    return links;
+  }
+
+  function startQueueFromLink(link) {
+    const links = getDetailMovieLinks();
+    const clickedAbs = new URL(link.href, location.origin).toString();
+    const idx = links.findIndex(item => new URL(item.href, location.origin).toString() === clickedAbs);
+    if (idx < 0) return;
+
+    const listKey = currentListKey();
+    GM_setValue(CONFIG.queueStateKey, {
+      running: true,
+      listKey,
+      currentIdx: idx,
+      total: links.length,
+      updatedAt: Date.now(),
+    });
+
+    Toast.show(`队列已开始：第 ${idx + 1}/${links.length} 部`, 'info', 1800);
+    window.open(withBatchParam(link.href, listKey, idx), '_blank', 'noopener');
+  }
+
+  function bootQueueWatcher(renderLogs) {
+    const listKey = currentListKey();
+    let lastSignalAt = 0;
+
+    const tick = () => {
+      const state = GM_getValue(CONFIG.queueStateKey, null);
+      if (!state?.running || state.listKey !== listKey) return;
+
+      const signal = GM_getValue(CONFIG.lastDoneKey, null);
+      if (!signal || signal.listKey !== listKey || signal.at === lastSignalAt) return;
+      if (signal.idx !== state.currentIdx) return;
+
+      lastSignalAt = signal.at;
+      const links = getDetailMovieLinks();
+      const nextIdx = state.currentIdx + 1;
+      if (nextIdx >= links.length) {
+        GM_setValue(CONFIG.queueStateKey, { ...state, running: false, updatedAt: Date.now() });
+        Toast.show(`队列完成：共处理 ${state.currentIdx + 1} 部`, 'success', 2600);
+        if (typeof renderLogs === 'function') renderLogs();
+        return;
+      }
+
+      const nextLink = links[nextIdx];
+      GM_setValue(CONFIG.queueStateKey, {
+        ...state,
+        currentIdx: nextIdx,
+        total: links.length,
+        updatedAt: Date.now(),
+      });
+      Toast.show(`继续下一部：${nextIdx + 1}/${links.length}`, 'process', 1600);
+      window.open(withBatchParam(nextLink.href, listKey, nextIdx), '_blank', 'noopener');
+      if (typeof renderLogs === 'function') renderLogs();
+    };
+
+    window.addEventListener('focus', tick);
+    setInterval(tick, 1200);
   }
 
   function renderBatchLogs(container) {
@@ -618,7 +716,7 @@
           <input id="g4k-list-mode" type="checkbox"> 一键转存模式
         </label>
       </div>
-      <div style="font-size:11px;color:#666;margin-top:6px;">开启后，点击影片将自动新开内容页。单资源会自动转存并自动关闭页面；多资源需手动点“ 一键转存 ”，成功后自动关闭。</div>
+      <div style="font-size:11px;color:#666;margin-top:6px;">开启后，你点击任意一部影片会启动顺序队列：从当前这部开始，成功关闭后自动打开下一部；单资源自动转存，多资源手动点“ 一键转存 ”。</div>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;">
         <b style="font-size:12px;">转存日志</b>
         <button id="g4k-clear-logs" style="border:1px solid #ddd;background:#fff;border-radius:6px;padding:3px 8px;cursor:pointer;font-size:11px;">清空</button>
@@ -650,14 +748,16 @@
       const link = target.closest('a[href]');
       if (!link) return;
       const href = link.getAttribute('href') || '';
-      if (!href || href.startsWith('javascript:') || /\/down\//.test(href) || href.startsWith('#')) return;
-      if (!/\/vod\//.test(href)) return;
+      if (!href || href.startsWith('javascript:') || href.startsWith('#')) return;
+      if (!/\/vod\/(detail|down)\//.test(href)) return;
       if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
 
       event.preventDefault();
       event.stopPropagation();
-      window.open(withBatchParam(link.href), '_blank', 'noopener');
+      startQueueFromLink(link);
     }, true);
+
+    bootQueueWatcher(() => renderBatchLogs(listEl));
   }
 
   function injectStyles() {
