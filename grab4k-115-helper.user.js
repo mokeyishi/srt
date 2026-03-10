@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Grab4K 115 一键转存助手（增强版）
-// @version      5.5.0
+// @version      5.5.1
 // @description  Grab4K 内容页 115 转存 + 筛选页顺序新标签自动浏览
 // @author       楠 (adapted for Grab4K, enhanced by Codex)
 // @match        *://grab4k.com/*
@@ -561,14 +561,34 @@
   const SequenceNavigator = {
     state: { enabled: false, sid: '', queue: [], current: -1 },
     pollTimer: null,
+    openedTabRef: null,
 
-    getMovieAnchors() {
-      return [...document.querySelectorAll('a[href*="/down/"]')]
-        .filter(a => a.querySelector('img') || a.closest('.module-item'));
+    normalizeHref(href) {
+      const url = new URL(href, location.origin);
+      url.search = '';
+      url.hash = '';
+      return url.toString();
     },
 
     getCard(anchor) {
       return anchor.closest('.module-item, .module-card-item, .module-list-item') || anchor;
+    },
+
+    getMovieItems() {
+      const anchors = [...document.querySelectorAll('a[href*="/down/"]')]
+        .filter(a => a.closest('.module-item, .module-card-item, .module-list-item'));
+
+      const seenCard = new WeakSet();
+      const items = [];
+      anchors.forEach(anchor => {
+        const card = this.getCard(anchor);
+        if (seenCard.has(card)) return;
+        seenCard.add(card);
+        const href = anchor.getAttribute('href');
+        if (!href) return;
+        items.push({ anchor, card, href: this.normalizeHref(href) });
+      });
+      return items;
     },
 
     ensureBadge(card) {
@@ -587,8 +607,8 @@
     },
 
     renderOutline() {
-      this.getMovieAnchors().forEach(anchor => {
-        this.getCard(anchor).classList.add('g4k-seq-card');
+      this.getMovieItems().forEach(item => {
+        item.card.classList.add('g4k-seq-card');
       });
     },
 
@@ -603,8 +623,8 @@
 
     reset(clearPersist = true) {
       this.state = { enabled: false, sid: '', queue: [], current: -1 };
+      this.openedTabRef = null;
       this.clearBadges();
-      document.querySelectorAll('.g4k-seq-card').forEach(el => el.classList.remove('g4k-seq-card'));
       if (clearPersist) {
         GM_setValue(CONFIG.seqStateKey, null);
       }
@@ -628,6 +648,7 @@
       this.state.sid = `sid_${Date.now()}`;
       this.state.queue = [];
       this.state.current = -1;
+      this.openedTabRef = null;
       this.saveState();
       this.renderOutline();
       this.updatePanel();
@@ -643,27 +664,49 @@
         return;
       }
       const target = withSeqParams(url, this.state.sid, this.state.current);
-      window.open(target, '_blank');
+      this.openedTabRef = window.open(target, '_blank');
       this.saveState();
       this.updatePanel();
       Toast.show(`已打开第 ${this.state.current + 1} 部`, 'process', 1800);
     },
 
     startFromAnchor(anchor) {
-      const all = this.getMovieAnchors();
-      const idx = all.indexOf(anchor);
+      const items = this.getMovieItems();
+      const clickedCard = this.getCard(anchor);
+      const idx = items.findIndex(item => item.card === clickedCard);
       if (idx < 0) return;
-      this.state.queue = all.slice(idx).map(a => new URL(a.getAttribute('href'), location.origin).toString());
+
+      this.state.queue = items.slice(idx).map(item => item.href);
       this.state.current = 0;
       this.clearBadges();
-      all.slice(idx).forEach((a, i) => {
-        const card = this.getCard(a);
-        const badge = this.ensureBadge(card);
+      items.slice(idx).forEach((item, i) => {
+        item.card.classList.add('g4k-seq-card');
+        const badge = this.ensureBadge(item.card);
         badge.textContent = String(i + 1);
       });
+
       this.saveState();
       this.updatePanel();
       this.openCurrent();
+    },
+
+    openNext() {
+      this.state.current += 1;
+      this.openedTabRef = null;
+      this.saveState();
+      if (this.state.current >= this.state.queue.length) {
+        Toast.show('顺序浏览完成', 'success', 3000);
+        this.reset();
+        return;
+      }
+      this.openCurrent();
+    },
+
+    maybeOpenNextByTabClose() {
+      if (!this.state.enabled || this.state.current < 0) return;
+      if (!this.openedTabRef) return;
+      if (!this.openedTabRef.closed) return;
+      this.openNext();
     },
 
     maybeOpenNextByCloseSignal() {
@@ -672,14 +715,7 @@
       if (!closed || closed.sid !== this.state.sid) return;
       if (closed.idx !== this.state.current) return;
       GM_setValue(CONFIG.seqCloseKey, null);
-      this.state.current += 1;
-      this.saveState();
-      if (this.state.current >= this.state.queue.length) {
-        Toast.show('顺序浏览完成', 'success', 3000);
-        this.reset();
-        return;
-      }
-      this.openCurrent();
+      this.openNext();
     },
 
     bindEvents() {
@@ -694,11 +730,20 @@
         }
       }, true);
 
-      window.addEventListener('focus', () => this.maybeOpenNextByCloseSignal());
-      document.addEventListener('visibilitychange', () => {
-        if (!document.hidden) this.maybeOpenNextByCloseSignal();
+      window.addEventListener('focus', () => {
+        this.maybeOpenNextByTabClose();
+        this.maybeOpenNextByCloseSignal();
       });
-      this.pollTimer = window.setInterval(() => this.maybeOpenNextByCloseSignal(), 1200);
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+          this.maybeOpenNextByTabClose();
+          this.maybeOpenNextByCloseSignal();
+        }
+      });
+      this.pollTimer = window.setInterval(() => {
+        this.maybeOpenNextByTabClose();
+        this.maybeOpenNextByCloseSignal();
+      }, 800);
     },
 
     mountPanel() {
@@ -737,11 +782,11 @@
       this.bindEvents();
       if (this.state.enabled) {
         this.renderOutline();
-        const anchors = this.getMovieAnchors();
+        const items = this.getMovieItems();
         this.state.queue.forEach((href, i) => {
-          const a = anchors.find(item => new URL(item.getAttribute('href'), location.origin).toString() === href);
-          if (!a) return;
-          const badge = this.ensureBadge(this.getCard(a));
+          const item = items.find(it => it.href === href);
+          if (!item) return;
+          const badge = this.ensureBadge(item.card);
           badge.textContent = String(i + 1);
         });
       }
