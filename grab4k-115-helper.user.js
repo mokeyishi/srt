@@ -417,8 +417,7 @@
   }
 
   async function maybeAutoTransferSingle(rows) {
-    const autoEnabled = GM_getValue('auto_single_transfer', true);
-    if (!autoEnabled || rows.length !== 1) return;
+    if (rows.length !== 1) return;
 
     if (sessionStorage.getItem(CONFIG.autoTransferredFlag) === '1') return;
     sessionStorage.setItem(CONFIG.autoTransferredFlag, '1');
@@ -520,10 +519,6 @@
         <input id="g4k-cid" type="text" placeholder="0 = 根目录"
           style="width:100%;padding:8px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;box-sizing:border-box;margin-top:6px;">
       </div>
-      <label style="display:flex;align-items:center;gap:8px;margin-bottom:18px;cursor:pointer;">
-        <input id="g4k-auto-single" type="checkbox" style="width:14px;height:14px;">
-        <span>当内容页仅有 1 个资源时自动转存</span>
-      </label>
       <div style="display:flex;gap:8px;justify-content:flex-end">
         <button id="g4k-cancel" style="padding:7px 18px;border:1px solid #ddd;border-radius:8px;background:#fff;cursor:pointer;font-size:13px;">取消</button>
         <button id="g4k-save" style="padding:7px 18px;border:none;border-radius:8px;background:linear-gradient(135deg,#1976d2,#1565c0);color:#fff;cursor:pointer;font-weight:600;font-size:13px;">保存</button>
@@ -536,14 +531,12 @@
     setTimeout(() => {
       document.getElementById('g4k-cookie').value = GM_getValue('115_cookie', '');
       document.getElementById('g4k-cid').value = GM_getValue('115_cid', '0');
-      document.getElementById('g4k-auto-single').checked = GM_getValue('auto_single_transfer', true);
     }, 30);
 
     document.getElementById('g4k-cancel').onclick = () => overlay.remove();
     document.getElementById('g4k-save').onclick = () => {
       GM_setValue('115_cookie', document.getElementById('g4k-cookie').value.trim());
       GM_setValue('115_cid', document.getElementById('g4k-cid').value.trim() || '0');
-      GM_setValue('auto_single_transfer', document.getElementById('g4k-auto-single').checked);
       Toast.show('设置已保存', 'success');
       overlay.remove();
     };
