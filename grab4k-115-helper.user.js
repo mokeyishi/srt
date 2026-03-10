@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grab4K 115 一键转存助手（增强版）
-// @version      5.4.0
-// @description  在 Grab4K 内容页为 115 资源提供一键/批量转存、单资源自动转存与列表选择转存
+// @version      5.6.0
+// @description  Grab4K 筛选页顺序新标签浏览助手（仅筛选页生效）
 // @author       楠 (adapted for Grab4K, enhanced by Codex)
 // @match        *://grab4k.com/*
 // @match        *://www.grab4k.com/*
@@ -33,12 +33,32 @@
     requestTimeout: 15000,
     autoTransferDelay: 900,
     autoTransferredFlag: 'g4k_auto_transferred',
+    seqStateKey: 'g4k_seq_state',
+    seqCloseKey: 'g4k_seq_closed',
   };
 
   if (!CONFIG.siteDomains.some(domain => location.hostname.includes(domain))) return;
-  if (!/\/down\//.test(location.pathname)) return;
+
+  const isDetailPage = /\/down\//.test(location.pathname);
+  if (isDetailPage) return;
 
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+  function withSeqParams(rawUrl, sid, idx) {
+    const url = new URL(rawUrl, location.origin);
+    url.searchParams.set('g4k_sid', sid);
+    url.searchParams.set('g4k_idx', String(idx));
+    return url.toString();
+  }
+
+  function readSeqParams() {
+    const url = new URL(location.href);
+    const sid = url.searchParams.get('g4k_sid');
+    const idxText = url.searchParams.get('g4k_idx');
+    const idx = Number(idxText);
+    if (!sid || Number.isNaN(idx)) return null;
+    return { sid, idx };
+  }
 
   const Utils = {
     parse115Link(text) {
@@ -538,6 +558,250 @@
     document.body.appendChild(fab);
   }
 
+
+  const SequenceNavigator = {
+    state: { enabled: false, sid: '', queue: [], current: -1 },
+    pollTimer: null,
+    openedTabRef: null,
+
+    normalizeHref(href) {
+      const url = new URL(href, location.origin);
+      url.search = '';
+      url.hash = '';
+      return url.toString();
+    },
+
+    getCard(anchor) {
+      return anchor.closest('.module-item, .module-card-item, .module-list-item') || anchor;
+    },
+
+    getMovieItems() {
+      const anchors = [...document.querySelectorAll('a[href*="/down/"]')]
+        .filter(a => a.closest('.module-item, .module-card-item, .module-list-item'));
+
+      const seenCard = new WeakSet();
+      const items = [];
+      anchors.forEach(anchor => {
+        const card = this.getCard(anchor);
+        if (seenCard.has(card)) return;
+        seenCard.add(card);
+        const href = anchor.getAttribute('href');
+        if (!href) return;
+        items.push({ anchor, card, href: this.normalizeHref(href) });
+      });
+      return items;
+    },
+
+    ensureBadge(card) {
+      let badge = card.querySelector('.g4k-seq-badge');
+      if (!badge) {
+        badge = document.createElement('div');
+        badge.className = 'g4k-seq-badge';
+        card.appendChild(badge);
+      }
+      return badge;
+    },
+
+    clearBadges() {
+      document.querySelectorAll('.g4k-seq-badge').forEach(el => el.remove());
+      document.querySelectorAll('.g4k-seq-card').forEach(el => el.classList.remove('g4k-seq-card'));
+    },
+
+    renderOutline() {
+      this.getMovieItems().forEach(item => {
+        item.card.classList.add('g4k-seq-card');
+      });
+    },
+
+    saveState() {
+      GM_setValue(CONFIG.seqStateKey, this.state);
+    },
+
+    loadState() {
+      const raw = GM_getValue(CONFIG.seqStateKey, null);
+      if (raw && raw.sid) this.state = raw;
+    },
+
+    reset(clearPersist = true) {
+      this.state = { enabled: false, sid: '', queue: [], current: -1 };
+      this.openedTabRef = null;
+      this.clearBadges();
+      if (clearPersist) {
+        GM_setValue(CONFIG.seqStateKey, null);
+      }
+      this.updatePanel();
+    },
+
+    updatePanel() {
+      const startBtn = document.getElementById('g4k-seq-start');
+      const stopBtn = document.getElementById('g4k-seq-stop');
+      const status = document.getElementById('g4k-seq-status');
+      if (!startBtn || !stopBtn || !status) return;
+      startBtn.style.display = this.state.enabled ? 'none' : 'inline-block';
+      stopBtn.style.display = this.state.enabled ? 'inline-block' : 'none';
+      status.textContent = this.state.enabled
+        ? `已开启，当前进度 ${Math.max(this.state.current + 1, 0)}/${this.state.queue.length}`
+        : '未开启';
+    },
+
+    start() {
+      this.state.enabled = true;
+      this.state.sid = `sid_${Date.now()}`;
+      this.state.queue = [];
+      this.state.current = -1;
+      this.openedTabRef = null;
+      this.saveState();
+      this.renderOutline();
+      this.updatePanel();
+      Toast.show('请点击任意影片作为起点，将按顺序新标签打开', 'info', 3000);
+    },
+
+    openCurrent() {
+      if (!this.state.enabled) return;
+      const url = this.state.queue[this.state.current];
+      if (!url) {
+        Toast.show('队列已完成', 'success', 2600);
+        this.reset();
+        return;
+      }
+      const target = withSeqParams(url, this.state.sid, this.state.current);
+      this.openedTabRef = window.open(target, '_blank');
+      this.saveState();
+      this.updatePanel();
+      Toast.show(`已打开第 ${this.state.current + 1} 部`, 'process', 1800);
+    },
+
+    startFromAnchor(anchor) {
+      const items = this.getMovieItems();
+      const clickedCard = this.getCard(anchor);
+      const idx = items.findIndex(item => item.card === clickedCard);
+      if (idx < 0) return;
+
+      this.state.queue = items.slice(idx).map(item => item.href);
+      this.state.current = 0;
+      this.clearBadges();
+      items.slice(idx).forEach((item, i) => {
+        item.card.classList.add('g4k-seq-card');
+        const badge = this.ensureBadge(item.card);
+        badge.textContent = String(i + 1);
+      });
+
+      this.saveState();
+      this.updatePanel();
+      this.openCurrent();
+    },
+
+    openNext() {
+      this.state.current += 1;
+      this.openedTabRef = null;
+      this.saveState();
+      if (this.state.current >= this.state.queue.length) {
+        Toast.show('顺序浏览完成', 'success', 3000);
+        this.reset();
+        return;
+      }
+      this.openCurrent();
+    },
+
+    maybeOpenNextByTabClose() {
+      if (!this.state.enabled || this.state.current < 0) return;
+      if (!this.openedTabRef) return;
+      if (!this.openedTabRef.closed) return;
+      this.openNext();
+    },
+
+    maybeOpenNextByCloseSignal() {
+      if (!this.state.enabled || this.state.current < 0) return;
+      const closed = GM_getValue(CONFIG.seqCloseKey, null);
+      if (!closed || closed.sid !== this.state.sid) return;
+      if (closed.idx !== this.state.current) return;
+      GM_setValue(CONFIG.seqCloseKey, null);
+      this.openNext();
+    },
+
+    bindEvents() {
+      document.addEventListener('click', event => {
+        if (!this.state.enabled) return;
+        const anchor = event.target.closest('a[href*="/down/"]');
+        if (!anchor) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (this.state.current === -1) {
+          this.startFromAnchor(anchor);
+        }
+      }, true);
+
+      window.addEventListener('focus', () => {
+        this.maybeOpenNextByTabClose();
+        this.maybeOpenNextByCloseSignal();
+      });
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+          this.maybeOpenNextByTabClose();
+          this.maybeOpenNextByCloseSignal();
+        }
+      });
+      this.pollTimer = window.setInterval(() => {
+        this.maybeOpenNextByTabClose();
+        this.maybeOpenNextByCloseSignal();
+      }, 800);
+    },
+
+    mountPanel() {
+      if (document.getElementById('g4k-seq-panel')) return;
+      const panel = document.createElement('div');
+      panel.id = 'g4k-seq-panel';
+      panel.innerHTML = `
+        <div style="font-weight:700;margin-bottom:6px;">顺序看片助手</div>
+        <div id="g4k-seq-status" style="font-size:12px;color:#ddd;margin-bottom:8px;">未开启</div>
+        <div style="display:flex;gap:6px;">
+          <button id="g4k-seq-start">开始</button>
+          <button id="g4k-seq-stop">停止</button>
+        </div>
+      `;
+      Object.assign(panel.style, {
+        position: 'fixed', right: '18px', bottom: '80px', zIndex: 99997,
+        background: 'rgba(15,23,42,.9)', color: '#fff', borderRadius: '10px',
+        padding: '10px', width: '180px', fontSize: '13px', fontFamily: 'system-ui,sans-serif',
+      });
+      document.body.appendChild(panel);
+      const btnStyle = {
+        border: 'none', borderRadius: '6px', cursor: 'pointer', padding: '6px 10px', fontSize: '12px', fontWeight: '700',
+      };
+      const startBtn = panel.querySelector('#g4k-seq-start');
+      const stopBtn = panel.querySelector('#g4k-seq-stop');
+      Object.assign(startBtn.style, btnStyle, { background: '#22c55e', color: '#062d16' });
+      Object.assign(stopBtn.style, btnStyle, { background: '#ef4444', color: '#fff', display: 'none' });
+      startBtn.onclick = () => this.start();
+      stopBtn.onclick = () => this.reset();
+      this.updatePanel();
+    },
+
+    init() {
+      this.loadState();
+      this.mountPanel();
+      this.bindEvents();
+      if (this.state.enabled) {
+        this.renderOutline();
+        const items = this.getMovieItems();
+        this.state.queue.forEach((href, i) => {
+          const item = items.find(it => it.href === href);
+          if (!item) return;
+          const badge = this.ensureBadge(item.card);
+          badge.textContent = String(i + 1);
+        });
+      }
+    },
+  };
+
+  function initDetailCloseReporter() {
+    const info = readSeqParams();
+    if (!info) return;
+    window.addEventListener('beforeunload', () => {
+      GM_setValue(CONFIG.seqCloseKey, { sid: info.sid, idx: info.idx, at: Date.now() });
+    });
+  }
+
   function injectStyles() {
     if (document.getElementById('g4k-style')) return;
     const style = document.createElement('style');
@@ -550,6 +814,13 @@
       }
       .g4k-transfer-btn:hover { filter: brightness(1.08); }
       #g4k-select-items label:hover { background: #f8fafe; }
+      .g4k-seq-card { outline: 2px dashed #22c55e; outline-offset: 3px; position: relative; }
+      .g4k-seq-badge {
+        position: absolute; top: 6px; left: 6px; z-index: 3;
+        min-width: 24px; height: 24px; line-height: 24px; text-align: center;
+        border-radius: 999px; background: #ef4444; color: #fff; font-weight: 800; font-size: 12px;
+        box-shadow: 0 2px 8px rgba(0,0,0,.35);
+      }
     `;
     document.head.appendChild(style);
   }
@@ -568,9 +839,7 @@
   function init() {
     injectStyles();
     Toast.init();
-    addSettingsButton();
-    injectTransferButtons();
-    observeListChanges();
+    SequenceNavigator.init();
   }
 
   try {
